@@ -121,8 +121,7 @@ void saveResults(const char *filename, PortInfo *results, int count) {
         fprintf(fp, "端口: %d\n", results[i].port);
         fprintf(fp, "服务: %s\n", results[i].service);
         fprintf(fp, "版本: %s\n", results[i].version);
-        fprintf(fp, "状态: %s\n", status_str);
-        fprintf(fp, "安全性: %s\n\n", results[i].isVulnerable ? "可能存在漏洞" : "未发现明显漏洞");
+        fprintf(fp, "状态: %s\n\n", status_str);
     }
 
     fclose(fp);

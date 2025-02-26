@@ -31,9 +31,6 @@ void analyzeTCPResponse(const char *ip, int port, PortInfo *portInfo) {
     if (response[0] != '\0') {
         // 分析服务横幅信息
         analyzeServiceBanner(response, portInfo);
-        
-        // 检测潜在漏洞
-        detectVulnerabilities(ip, port, portInfo->service, portInfo);
     }
 }
 
@@ -87,38 +84,4 @@ void analyzeServiceBanner(const char *banner, PortInfo *portInfo) {
             break;
         }
     }
-}
-
-BOOL detectVulnerabilities(const char *ip, int port, const char *service, PortInfo *portInfo) {
-    // 简单的漏洞检测逻辑
-    if (strcmp(service, "FTP") == 0) {
-        // 检查匿名FTP访问
-        SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (sock != INVALID_SOCKET) {
-            struct sockaddr_in server = {0};
-            server.sin_family = AF_INET;
-            server.sin_port = htons(port);
-            inet_pton(AF_INET, ip, &server.sin_addr);
-
-            if (connect(sock, (struct sockaddr*)&server, sizeof(server)) == 0) {
-                char response[BUFFER_SIZE];
-                recv(sock, response, sizeof(response) - 1, 0);
-                
-                send(sock, "USER anonymous\r\n", 15, 0);
-                recv(sock, response, sizeof(response) - 1, 0);
-                
-                send(sock, "PASS anonymous@test.com\r\n", 24, 0);
-                recv(sock, response, sizeof(response) - 1, 0);
-
-                if (strstr(response, "230")) {
-                    portInfo->isVulnerable = TRUE;
-                    strcat(portInfo->version, " (允许匿名访问)");
-                }
-            }
-            closesocket(sock);
-        }
-    }
-    // 可以添加更多服务的漏洞检测逻辑
-
-    return portInfo->isVulnerable;
 } 

@@ -25,7 +25,6 @@ typedef struct {
     char service[64];
     char version[128];
     char status[32];
-    BOOL isVulnerable;
 } PortInfo;
 
 // 再定义 ScanConfig 结构体
