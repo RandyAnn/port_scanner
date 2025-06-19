@@ -28,5 +28,7 @@ void logAnalyzerError(AnalyzerResult error, const char* function, const char* de
 AnalyzerResult analyzeTCPResponse(const char *ip, int port, PortInfo *portInfo);
 AnalyzerResult sendServiceProbe(const char *ip, int port, char *response, int responseSize);
 void analyzeServiceBanner(const char *banner, PortInfo *portInfo);
+void analyzeServiceBannerAdvanced(const char *banner, int port, PortInfo *portInfo);
+void extractVersionSimple(const char *banner, const char *pattern, char *version, size_t version_size);
 
 #endif

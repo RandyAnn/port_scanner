@@ -58,19 +58,97 @@ void logAnalyzerError(AnalyzerResult error, const char* function, const char* de
     }
 }
 
-// 服务指纹数据库（简化版）
-static const struct {
-    const char *pattern;
-    const char *service;
-    const char *version;
-} servicePatterns[] = {
-    {"SSH-2.0", "SSH", "2.0"},
-    {"HTTP/1.", "HTTP", NULL},
-    {"220 (vsFTPd", "FTP", "vsFTPd"},
-    {"220 ProFTPD", "FTP", "ProFTPD"},
-    {"*SMTP*", "SMTP", NULL},
-    {"MySQL", "MySQL", NULL},
-    {NULL, NULL, NULL}
+// 增强的服务指纹数据库
+typedef struct {
+    const char *pattern;        // 匹配模式
+    const char *service;        // 服务名称
+    const char *version_pattern; // 版本提取模式
+    int confidence;             // 置信度 (1-100)
+    int port_hint;              // 端口提示 (0表示任意端口)
+} ServicePattern;
+
+static const ServicePattern servicePatterns[] = {
+    // Web服务器
+    {"Apache/", "HTTP", "Apache/([0-9.]+)", 95, 80},
+    {"nginx/", "HTTP", "nginx/([0-9.]+)", 95, 80},
+    {"Microsoft-IIS/", "HTTP", "Microsoft-IIS/([0-9.]+)", 95, 80},
+    {"lighttpd/", "HTTP", "lighttpd/([0-9.]+)", 90, 80},
+    {"Cherokee/", "HTTP", "Cherokee/([0-9.]+)", 85, 80},
+    {"HTTP/1.", "HTTP", NULL, 70, 80},
+    {"Server: ", "HTTP", "Server: ([^\r\n]+)", 60, 80},
+
+    // SSH服务
+    {"SSH-2.0-OpenSSH_", "SSH", "SSH-2.0-OpenSSH_([0-9.]+)", 95, 22},
+    {"SSH-2.0", "SSH", "SSH-2.0-([^\r\n]+)", 90, 22},
+    {"SSH-1.", "SSH", "SSH-1.([0-9]+)", 85, 22},
+
+    // FTP服务
+    {"220 (vsFTPd", "FTP", "220 \\(vsFTPd ([0-9.]+)\\)", 95, 21},
+    {"220 ProFTPD", "FTP", "220 ProFTPD ([0-9.]+)", 95, 21},
+    {"220 FileZilla Server", "FTP", "220-FileZilla Server ([0-9.]+)", 90, 21},
+    {"220 Microsoft FTP Service", "FTP", "220 Microsoft FTP Service", 85, 21},
+    {"220 ", "FTP", "220 ([^\r\n]+)", 70, 21},
+
+    // SMTP服务
+    {"220 ", "SMTP", "220 ([^\r\n]+)", 80, 25},
+    {"ESMTP", "SMTP", "ESMTP ([^\r\n]+)", 85, 25},
+    {"Postfix", "SMTP", "Postfix", 90, 25},
+    {"Sendmail", "SMTP", "Sendmail ([0-9.]+)", 90, 25},
+    {"Microsoft ESMTP MAIL Service", "SMTP", "Microsoft ESMTP MAIL Service", 85, 25},
+
+    // 数据库服务
+    {"MySQL", "MySQL", "([0-9.]+)-", 90, 3306},
+    {"PostgreSQL", "PostgreSQL", "PostgreSQL ([0-9.]+)", 90, 5432},
+    {"Microsoft SQL Server", "MSSQL", "Microsoft SQL Server ([0-9]+)", 90, 1433},
+    {"Oracle", "Oracle", "Oracle Database ([0-9.]+)", 85, 1521},
+    {"MongoDB", "MongoDB", "MongoDB ([0-9.]+)", 85, 27017},
+    {"Redis", "Redis", "Redis server v=([0-9.]+)", 85, 6379},
+
+    // 邮件服务
+    {"POP3", "POP3", "POP3 ([^\r\n]+)", 85, 110},
+    {"IMAP", "IMAP", "IMAP4rev1 ([^\r\n]+)", 85, 143},
+    {"Dovecot", "IMAP", "Dovecot ([0-9.]+)", 90, 143},
+
+    // DNS服务
+    {"BIND", "DNS", "BIND ([0-9.]+)", 90, 53},
+    {"dnsmasq", "DNS", "dnsmasq-([0-9.]+)", 85, 53},
+
+    // 其他常见服务
+    {"Telnet", "Telnet", NULL, 80, 23},
+    {"SNMP", "SNMP", NULL, 80, 161},
+    {"NTP", "NTP", NULL, 75, 123},
+    {"LDAP", "LDAP", NULL, 80, 389},
+    {"HTTPS", "HTTPS", NULL, 85, 443},
+    {"FTPS", "FTPS", NULL, 80, 990},
+    {"SMTPS", "SMTPS", NULL, 80, 465},
+    {"POP3S", "POP3S", NULL, 80, 995},
+    {"IMAPS", "IMAPS", NULL, 80, 993},
+
+    // 远程访问服务
+    {"RDP", "RDP", NULL, 80, 3389},
+    {"VNC", "VNC", "RFB ([0-9.]+)", 85, 5900},
+    {"TeamViewer", "TeamViewer", NULL, 75, 5938},
+
+    // 文件共享服务
+    {"SMB", "SMB", NULL, 80, 445},
+    {"NetBIOS", "NetBIOS", NULL, 75, 139},
+    {"NFS", "NFS", NULL, 75, 2049},
+
+    // 代理服务
+    {"Squid", "Proxy", "squid/([0-9.]+)", 85, 3128},
+    {"SOCKS", "SOCKS", NULL, 75, 1080},
+
+    // 游戏服务
+    {"Minecraft", "Minecraft", "([0-9.]+)", 80, 25565},
+    {"Steam", "Steam", NULL, 75, 27015},
+
+    // 监控和管理
+    {"SNMP", "SNMP", NULL, 80, 161},
+    {"Zabbix", "Zabbix", NULL, 75, 10050},
+    {"Nagios", "Nagios", NULL, 75, 5666},
+
+    // 结束标记
+    {NULL, NULL, NULL, 0, 0}
 };
 
 AnalyzerResult analyzeTCPResponse(const char *ip, int port, PortInfo *portInfo) {
@@ -89,8 +167,8 @@ AnalyzerResult analyzeTCPResponse(const char *ip, int port, PortInfo *portInfo) 
     }
 
     if (response[0] != '\0') {
-        // 分析服务横幅信息
-        analyzeServiceBanner(response, portInfo);
+        // 使用高级服务横幅分析，包含端口信息进行交叉验证
+        analyzeServiceBannerAdvanced(response, port, portInfo);
     }
 
     return ANALYZER_SUCCESS;
@@ -177,6 +255,107 @@ AnalyzerResult sendServiceProbe(const char *ip, int port, char *response, int re
     return ANALYZER_SUCCESS;
 }
 
+// 简单的版本提取函数（用于不支持正则表达式的情况）
+void extractVersionSimple(const char *banner, const char *pattern, char *version, size_t version_size) {
+    if (!banner || !pattern || !version) return;
+
+    char *start = strstr(banner, pattern);
+    if (!start) return;
+
+    start += strlen(pattern);
+
+    // 跳过空格
+    while (*start == ' ' || *start == '\t') start++;
+
+    // 提取版本号直到遇到空格、换行或其他分隔符
+    size_t i = 0;
+    while (i < version_size - 1 && *start &&
+           *start != ' ' && *start != '\t' && *start != '\r' && *start != '\n' &&
+           *start != ')' && *start != ']' && *start != '}') {
+        version[i++] = *start++;
+    }
+    version[i] = '\0';
+}
+
+// 高级服务横幅分析函数
+void analyzeServiceBannerAdvanced(const char *banner, int port, PortInfo *portInfo) {
+    if (!banner || !portInfo) {
+        logAnalyzerError(ANALYZER_ERROR_INVALID_PARAM, "analyzeServiceBannerAdvanced", "无效的输入参数");
+        return;
+    }
+
+    int best_confidence = 0;
+    int best_match = -1;
+
+    // 遍历所有服务模式，找到最佳匹配
+    for (int i = 0; servicePatterns[i].pattern != NULL; i++) {
+        if (strstr(banner, servicePatterns[i].pattern)) {
+            int confidence = servicePatterns[i].confidence;
+
+            // 如果端口匹配，增加置信度
+            if (servicePatterns[i].port_hint == port) {
+                confidence += 10;
+            } else if (servicePatterns[i].port_hint != 0) {
+                // 端口不匹配，降低置信度
+                confidence -= 20;
+            }
+
+            // 选择置信度最高的匹配
+            if (confidence > best_confidence) {
+                best_confidence = confidence;
+                best_match = i;
+            }
+        }
+    }
+
+    // 如果找到匹配，设置服务信息
+    if (best_match >= 0) {
+        const ServicePattern *pattern = &servicePatterns[best_match];
+
+        // 设置服务名称
+        if (safe_strncpy(portInfo->service, pattern->service, sizeof(portInfo->service)) != 0) {
+            logAnalyzerError(ANALYZER_ERROR_MEMORY, "analyzeServiceBannerAdvanced", "服务名称复制失败");
+            return;
+        }
+
+        // 尝试提取版本信息
+        if (pattern->version_pattern) {
+            // 简化的版本提取（不使用正则表达式）
+            char temp_version[64] = {0};
+
+            if (strstr(pattern->version_pattern, "Apache/")) {
+                extractVersionSimple(banner, "Apache/", temp_version, sizeof(temp_version));
+            } else if (strstr(pattern->version_pattern, "nginx/")) {
+                extractVersionSimple(banner, "nginx/", temp_version, sizeof(temp_version));
+            } else if (strstr(pattern->version_pattern, "Microsoft-IIS/")) {
+                extractVersionSimple(banner, "Microsoft-IIS/", temp_version, sizeof(temp_version));
+            } else if (strstr(pattern->version_pattern, "SSH-2.0-OpenSSH_")) {
+                extractVersionSimple(banner, "SSH-2.0-OpenSSH_", temp_version, sizeof(temp_version));
+            } else if (strstr(pattern->version_pattern, "SSH-2.0-")) {
+                extractVersionSimple(banner, "SSH-2.0-", temp_version, sizeof(temp_version));
+            } else if (strstr(pattern->version_pattern, "220 ProFTPD")) {
+                extractVersionSimple(banner, "220 ProFTPD ", temp_version, sizeof(temp_version));
+            } else if (strstr(pattern->version_pattern, "vsFTPd")) {
+                extractVersionSimple(banner, "vsFTPd ", temp_version, sizeof(temp_version));
+            } else {
+                // 通用版本提取
+                char *ver = strstr(banner, "Server:");
+                if (ver) {
+                    extractVersionSimple(banner, "Server:", temp_version, sizeof(temp_version));
+                }
+            }
+
+            if (temp_version[0] != '\0') {
+                if (safe_strncpy(portInfo->version, temp_version, sizeof(portInfo->version)) != 0) {
+                    logAnalyzerError(ANALYZER_ERROR_MEMORY, "analyzeServiceBannerAdvanced", "版本信息复制失败");
+                    return;
+                }
+            }
+        }
+    }
+}
+
+// 保持向后兼容的原始函数
 void analyzeServiceBanner(const char *banner, PortInfo *portInfo) {
     // 参数有效性检查
     if (!banner || !portInfo) {
@@ -184,44 +363,6 @@ void analyzeServiceBanner(const char *banner, PortInfo *portInfo) {
         return;
     }
 
-    for (int i = 0; servicePatterns[i].pattern != NULL; i++) {
-        if (strstr(banner, servicePatterns[i].pattern)) {
-            // 使用安全字符串复制函数
-            if (safe_strncpy(portInfo->service, servicePatterns[i].service, sizeof(portInfo->service)) != 0) {
-                logAnalyzerError(ANALYZER_ERROR_MEMORY, "analyzeServiceBanner", "服务名称复制失败");
-                return;
-            }
-
-            if (servicePatterns[i].version) {
-                if (safe_strncpy(portInfo->version, servicePatterns[i].version, sizeof(portInfo->version)) != 0) {
-                    logAnalyzerError(ANALYZER_ERROR_MEMORY, "analyzeServiceBanner", "版本信息复制失败");
-                    return;
-                }
-            } else {
-                // 尝试从横幅中提取版本信息
-                char *ver = strstr(banner, "Server:");
-                if (ver) {
-                    // 跳过 "Server:" 并去除前导空格
-                    ver += 7;
-                    while (*ver == ' ' || *ver == '\t') {
-                        ver++;
-                    }
-
-                    // 安全复制版本信息
-                    if (safe_strncpy(portInfo->version, ver, sizeof(portInfo->version)) != 0) {
-                        logAnalyzerError(ANALYZER_ERROR_MEMORY, "analyzeServiceBanner", "版本信息提取失败");
-                        return;
-                    }
-
-                    // 去除尾部的换行符和回车符
-                    size_t len = strlen(portInfo->version);
-                    while (len > 0 && (portInfo->version[len-1] == '\r' || portInfo->version[len-1] == '\n')) {
-                        portInfo->version[len-1] = '\0';
-                        len--;
-                    }
-                }
-            }
-            break;
-        }
-    }
+    // 使用高级分析函数，端口设为0（表示不进行端口匹配）
+    analyzeServiceBannerAdvanced(banner, 0, portInfo);
 }
