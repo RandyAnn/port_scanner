@@ -69,6 +69,16 @@ int extractVersionInfo(const char *banner, const char *service, const char *patt
                       VersionExtractionMode mode, char *version, size_t version_size);
 void cleanVersionString(char *version, size_t max_len);
 
+// 性能统计结构体
+typedef struct {
+    int cache_hits;
+    int cache_misses;
+    int connections_reused;
+    int connections_created;
+    int buffers_reused;
+    int buffers_allocated;
+} PerformanceStats;
+
 // 重试和超时机制函数
 AnalyzerResult performProbeWithRetry(const char *ip, int port, const char *service,
                                     char *response, int responseSize);
@@ -78,5 +88,18 @@ const RetryConfig* getRetryConfigForService(const char* service);
 int calculateAdaptiveTimeout(const RetryConfig* config, int retry_attempt);
 int waitForSocketReady(SOCKET sock, int timeout_ms, BOOL wait_for_write);
 void updateNetworkCondition(BOOL success, int response_time_ms);
+
+// 性能优化和资源管理函数
+BOOL initializeResourcePool();
+void cleanupResourcePool();
+SOCKET getConnectionFromPool(const char* ip, int port);
+void returnConnectionToPool(SOCKET sock, const char* ip, int port);
+char* getBufferFromPool(size_t required_size);
+void returnBufferToPool(char* buffer);
+BOOL findCacheEntry(const char* ip, int port, PortInfo* portInfo);
+void addCacheEntry(const char* ip, int port, const PortInfo* portInfo);
+void cleanupExpiredCache();
+void getPerformanceStats(PerformanceStats* stats);
+void resetPerformanceStats();
 
 #endif
