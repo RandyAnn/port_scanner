@@ -60,6 +60,46 @@ void logAnalyzerError(AnalyzerResult error, const char* function, const char* de
 
 // 探测策略结构体已在头文件中定义
 
+// 重试配置结构体已在头文件中定义
+
+// 网络状况评估结构体
+typedef struct {
+    int successful_connections; // 成功连接数
+    int failed_connections;     // 失败连接数
+    int average_response_time;  // 平均响应时间(毫秒)
+    float packet_loss_rate;     // 丢包率
+} NetworkCondition;
+
+// 全局网络状况
+static NetworkCondition g_network_condition = {0, 0, 1000, 0.0f};
+
+// 默认重试配置
+static const RetryConfig default_retry_config = {
+    .max_retries = 2,
+    .base_timeout_ms = 1000,
+    .timeout_multiplier = 2.0f,
+    .max_timeout_ms = 8000,
+    .retry_delay_ms = 100
+};
+
+// 不同服务类型的重试配置
+static const RetryConfig service_retry_configs[] = {
+    // HTTP服务 - 通常响应较快
+    {2, 1500, 1.5f, 6000, 100},
+    // SSH服务 - 需要较长时间建立连接
+    {1, 2000, 2.0f, 4000, 200},
+    // FTP服务 - 中等响应时间
+    {2, 1000, 2.0f, 4000, 150},
+    // SMTP服务 - 通常响应较快
+    {2, 1500, 1.5f, 5000, 100},
+    // 数据库服务 - 可能需要较长时间
+    {1, 2000, 1.5f, 6000, 200},
+    // DNS服务 - 快速响应
+    {3, 500, 2.0f, 2000, 50},
+    // 其他服务 - 使用默认配置
+    {2, 1000, 2.0f, 8000, 100}
+};
+
 // 增强的服务指纹数据库
 typedef struct {
     const char *pattern;        // 匹配模式
@@ -277,6 +317,254 @@ static const ServicePattern servicePatterns[] = {
     {NULL, NULL, NULL, 0, 0}
 };
 
+// 更新网络状况统计
+void updateNetworkCondition(BOOL success, int response_time_ms) {
+    if (success) {
+        g_network_condition.successful_connections++;
+        // 更新平均响应时间（简单移动平均）
+        if (g_network_condition.successful_connections == 1) {
+            g_network_condition.average_response_time = response_time_ms;
+        } else {
+            g_network_condition.average_response_time =
+                (g_network_condition.average_response_time * 0.8f) + (response_time_ms * 0.2f);
+        }
+    } else {
+        g_network_condition.failed_connections++;
+    }
+
+    // 计算丢包率
+    int total_attempts = g_network_condition.successful_connections + g_network_condition.failed_connections;
+    if (total_attempts > 0) {
+        g_network_condition.packet_loss_rate =
+            (float)g_network_condition.failed_connections / total_attempts;
+    }
+}
+
+// 根据服务类型获取重试配置
+const RetryConfig* getRetryConfigForService(const char* service) {
+    if (!service) return &default_retry_config;
+
+    if (strcmp(service, "HTTP") == 0 || strcmp(service, "HTTPS") == 0) {
+        return &service_retry_configs[0]; // HTTP配置
+    } else if (strcmp(service, "SSH") == 0) {
+        return &service_retry_configs[1]; // SSH配置
+    } else if (strcmp(service, "FTP") == 0 || strcmp(service, "FTPS") == 0) {
+        return &service_retry_configs[2]; // FTP配置
+    } else if (strcmp(service, "SMTP") == 0 || strcmp(service, "SMTPS") == 0) {
+        return &service_retry_configs[3]; // SMTP配置
+    } else if (strcmp(service, "MySQL") == 0 || strcmp(service, "PostgreSQL") == 0 ||
+               strcmp(service, "MSSQL") == 0 || strcmp(service, "Oracle") == 0 ||
+               strcmp(service, "MongoDB") == 0 || strcmp(service, "Redis") == 0) {
+        return &service_retry_configs[4]; // 数据库配置
+    } else if (strcmp(service, "DNS") == 0) {
+        return &service_retry_configs[5]; // DNS配置
+    } else {
+        return &service_retry_configs[6]; // 其他服务配置
+    }
+}
+
+// 自适应超时计算
+int calculateAdaptiveTimeout(const RetryConfig* config, int retry_attempt) {
+    if (!config) config = &default_retry_config;
+
+    // 基础超时时间
+    int timeout = config->base_timeout_ms;
+
+    // 根据重试次数递增超时时间
+    for (int i = 0; i < retry_attempt; i++) {
+        timeout = (int)(timeout * config->timeout_multiplier);
+    }
+
+    // 根据网络状况调整超时时间
+    if (g_network_condition.packet_loss_rate > 0.3f) {
+        // 高丢包率，增加超时时间
+        timeout = (int)(timeout * 1.5f);
+    } else if (g_network_condition.average_response_time > 2000) {
+        // 响应时间较长，适当增加超时
+        timeout = (int)(timeout * 1.2f);
+    }
+
+    // 限制最大超时时间
+    if (timeout > config->max_timeout_ms) {
+        timeout = config->max_timeout_ms;
+    }
+
+    return timeout;
+}
+
+// 通用的select超时函数（抽象自tcp_handler.c）
+int waitForSocketReady(SOCKET sock, int timeout_ms, BOOL wait_for_write) {
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(sock, &fds);
+
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+    int result;
+    if (wait_for_write) {
+        result = select(0, NULL, &fds, NULL, &tv);
+    } else {
+        result = select(0, &fds, NULL, NULL, &tv);
+    }
+
+    return result;
+}
+
+// 带重试的探测函数
+AnalyzerResult performProbeWithRetry(const char *ip, int port, const char *service,
+                                    char *response, int responseSize) {
+    if (!ip || !response || responseSize <= 0 || port <= 0 || port > 65535) {
+        logAnalyzerError(ANALYZER_ERROR_INVALID_PARAM, "performProbeWithRetry", "无效的输入参数");
+        return ANALYZER_ERROR_INVALID_PARAM;
+    }
+
+    const RetryConfig* config = getRetryConfigForService(service);
+    AnalyzerResult last_result = ANALYZER_ERROR_CONNECTION;
+
+    for (int attempt = 0; attempt <= config->max_retries; attempt++) {
+        DWORD start_time = GetTickCount();
+
+        // 计算当前尝试的超时时间
+        int current_timeout = calculateAdaptiveTimeout(config, attempt);
+
+        // 执行探测
+        AnalyzerResult result = sendServiceProbeWithTimeout(ip, port, response, responseSize, current_timeout);
+
+        DWORD end_time = GetTickCount();
+        int response_time = end_time - start_time;
+
+        // 更新网络状况统计
+        updateNetworkCondition(result == ANALYZER_SUCCESS, response_time);
+
+        if (result == ANALYZER_SUCCESS) {
+            return ANALYZER_SUCCESS;
+        }
+
+        last_result = result;
+
+        // 如果不是最后一次尝试，等待重试间隔
+        if (attempt < config->max_retries) {
+            Sleep(config->retry_delay_ms);
+        }
+    }
+
+    return last_result;
+}
+
+// 带超时的服务探测函数（重构自原sendServiceProbe）
+AnalyzerResult sendServiceProbeWithTimeout(const char *ip, int port, char *response,
+                                          int responseSize, int timeout_ms) {
+    if (!ip || !response || responseSize <= 0 || port <= 0 || port > 65535) {
+        logAnalyzerError(ANALYZER_ERROR_INVALID_PARAM, "sendServiceProbeWithTimeout", "无效的输入参数");
+        return ANALYZER_ERROR_INVALID_PARAM;
+    }
+
+    response[0] = '\0';
+
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (sock == INVALID_SOCKET) {
+        logAnalyzerError(ANALYZER_ERROR_SOCKET_CREATE, "sendServiceProbeWithTimeout", "Socket创建失败");
+        return ANALYZER_ERROR_SOCKET_CREATE;
+    }
+
+    // 设置非阻塞模式
+    u_long mode = 1;
+    if (ioctlsocket(sock, FIONBIO, &mode) == SOCKET_ERROR) {
+        logAnalyzerError(ANALYZER_ERROR_SOCKET_CONFIG, "sendServiceProbeWithTimeout", "设置非阻塞模式失败");
+        closesocket(sock);
+        return ANALYZER_ERROR_SOCKET_CONFIG;
+    }
+
+    struct sockaddr_in server = {0};
+    server.sin_family = AF_INET;
+    server.sin_port = htons(port);
+
+    int inet_result = inet_pton(AF_INET, ip, &server.sin_addr);
+    if (inet_result <= 0) {
+        logAnalyzerError(ANALYZER_ERROR_INVALID_PARAM, "sendServiceProbeWithTimeout", "无效的IP地址格式");
+        closesocket(sock);
+        return ANALYZER_ERROR_INVALID_PARAM;
+    }
+
+    // 尝试连接
+    int connect_result = connect(sock, (struct sockaddr*)&server, sizeof(server));
+    if (connect_result == SOCKET_ERROR) {
+        int error = WSAGetLastError();
+        if (error != WSAEWOULDBLOCK) {
+            logAnalyzerError(ANALYZER_ERROR_CONNECTION, "sendServiceProbeWithTimeout", "连接失败");
+            closesocket(sock);
+            return ANALYZER_ERROR_CONNECTION;
+        }
+    }
+
+    // 等待连接完成
+    int select_result = waitForSocketReady(sock, timeout_ms, TRUE);
+    if (select_result != 1) {
+        logAnalyzerError(ANALYZER_ERROR_TIMEOUT, "sendServiceProbeWithTimeout", "连接超时");
+        closesocket(sock);
+        return ANALYZER_ERROR_TIMEOUT;
+    }
+
+    // 检查连接是否真的成功
+    int error = 0;
+    int len = sizeof(error);
+    if (getsockopt(sock, SOL_SOCKET, SO_ERROR, (char*)&error, &len) == SOCKET_ERROR || error != 0) {
+        logAnalyzerError(ANALYZER_ERROR_CONNECTION, "sendServiceProbeWithTimeout", "连接验证失败");
+        closesocket(sock);
+        return ANALYZER_ERROR_CONNECTION;
+    }
+
+    // 恢复阻塞模式
+    mode = 0;
+    ioctlsocket(sock, FIONBIO, &mode);
+
+    // 设置socket超时
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout_ms, sizeof(timeout_ms)) == SOCKET_ERROR) {
+        logAnalyzerError(ANALYZER_ERROR_SOCKET_CONFIG, "sendServiceProbeWithTimeout", "设置接收超时失败");
+    }
+    if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout_ms, sizeof(timeout_ms)) == SOCKET_ERROR) {
+        logAnalyzerError(ANALYZER_ERROR_SOCKET_CONFIG, "sendServiceProbeWithTimeout", "设置发送超时失败");
+    }
+
+    // 查找端口特定的探测策略
+    const ProbeStrategy *strategy = findProbeStrategy(port);
+    const char **probes = generic_probes;
+
+    if (strategy) {
+        probes = strategy->probes;
+    }
+
+    // 使用智能探测策略
+    for (int i = 0; probes[i] != NULL && response[0] == '\0'; i++) {
+        int send_result = send(sock, probes[i], strlen(probes[i]), 0);
+        if (send_result == SOCKET_ERROR) {
+            continue;
+        }
+
+        Sleep(100); // 等待服务器处理
+
+        int recv_result = recv(sock, response, responseSize - 1, 0);
+        if (recv_result > 0) {
+            response[recv_result] = '\0';
+            break;
+        }
+    }
+
+    // 如果没有收到响应，尝试等待主动横幅
+    if (response[0] == '\0') {
+        Sleep(500);
+        int recv_result = recv(sock, response, responseSize - 1, 0);
+        if (recv_result > 0) {
+            response[recv_result] = '\0';
+        }
+    }
+
+    closesocket(sock);
+    return ANALYZER_SUCCESS;
+}
+
 // 根据端口查找探测策略
 const ProbeStrategy* findProbeStrategy(int port) {
     for (int i = 0; portStrategies[i].port != 0; i++) {
@@ -368,8 +656,8 @@ AnalyzerResult analyzeTCPResponse(const char *ip, int port, PortInfo *portInfo) 
 
     char response[BUFFER_SIZE] = {0};
 
-    // 发送服务探测包并接收响应
-    AnalyzerResult result = sendServiceProbe(ip, port, response, BUFFER_SIZE);
+    // 使用带重试的探测机制
+    AnalyzerResult result = performProbeWithRetry(ip, port, NULL, response, BUFFER_SIZE);
     if (result != ANALYZER_SUCCESS) {
         return result;
     }

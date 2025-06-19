@@ -55,9 +55,28 @@ void analyzeServiceBannerAdvanced(const char *banner, int port, PortInfo *portIn
 void extractVersionSimple(const char *banner, const char *pattern, char *version, size_t version_size);
 const ProbeStrategy* findProbeStrategy(int port);
 
+// 重试配置结构体
+typedef struct {
+    int max_retries;
+    int base_timeout_ms;
+    float timeout_multiplier;
+    int max_timeout_ms;
+    int retry_delay_ms;
+} RetryConfig;
+
 // 高级版本提取函数
 int extractVersionInfo(const char *banner, const char *service, const char *pattern,
                       VersionExtractionMode mode, char *version, size_t version_size);
 void cleanVersionString(char *version, size_t max_len);
+
+// 重试和超时机制函数
+AnalyzerResult performProbeWithRetry(const char *ip, int port, const char *service,
+                                    char *response, int responseSize);
+AnalyzerResult sendServiceProbeWithTimeout(const char *ip, int port, char *response,
+                                          int responseSize, int timeout_ms);
+const RetryConfig* getRetryConfigForService(const char* service);
+int calculateAdaptiveTimeout(const RetryConfig* config, int retry_attempt);
+int waitForSocketReady(SOCKET sock, int timeout_ms, BOOL wait_for_write);
+void updateNetworkCondition(BOOL success, int response_time_ms);
 
 #endif
