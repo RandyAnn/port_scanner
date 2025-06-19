@@ -58,6 +58,8 @@ void logAnalyzerError(AnalyzerResult error, const char* function, const char* de
     }
 }
 
+// 探测策略结构体已在头文件中定义
+
 // 增强的服务指纹数据库
 typedef struct {
     const char *pattern;        // 匹配模式
@@ -66,6 +68,130 @@ typedef struct {
     int confidence;             // 置信度 (1-100)
     int port_hint;              // 端口提示 (0表示任意端口)
 } ServicePattern;
+
+// 各种协议的探测包定义
+static const char *http_probes[] = {
+    "GET / HTTP/1.1\r\nHost: localhost\r\nUser-Agent: PortScanner/1.0\r\nConnection: close\r\n\r\n",
+    "HEAD / HTTP/1.0\r\n\r\n",
+    "OPTIONS / HTTP/1.1\r\nHost: localhost\r\n\r\n",
+    NULL
+};
+
+static const char *https_probes[] = {
+    // SSL/TLS 握手包 (简化版)
+    "\x16\x03\x01\x00\x2f\x01\x00\x00\x2b\x03\x03",  // TLS ClientHello
+    NULL
+};
+
+static const char *ftp_probes[] = {
+    "USER anonymous\r\n",
+    "HELP\r\n",
+    "QUIT\r\n",
+    NULL
+};
+
+static const char *ssh_probes[] = {
+    "SSH-2.0-Scanner\r\n",
+    "\r\n",
+    NULL
+};
+
+static const char *smtp_probes[] = {
+    "HELO localhost\r\n",
+    "EHLO localhost\r\n",
+    "\r\n",
+    NULL
+};
+
+static const char *pop3_probes[] = {
+    "USER test\r\n",
+    "QUIT\r\n",
+    NULL
+};
+
+static const char *imap_probes[] = {
+    "A001 CAPABILITY\r\n",
+    "A002 LOGOUT\r\n",
+    NULL
+};
+
+static const char *telnet_probes[] = {
+    "\xff\xfb\x01\xff\xfb\x03\xff\xfc\x27",  // Telnet negotiation
+    "\r\n",
+    NULL
+};
+
+static const char *mysql_probes[] = {
+    "\x00\x00\x00\x01",  // MySQL connection packet
+    NULL
+};
+
+static const char *dns_udp_probes[] = {
+    "\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01",  // DNS query
+    NULL
+};
+
+static const char *snmp_udp_probes[] = {
+    "\x30\x26\x02\x01\x01\x04\x06public\xa0\x19\x02\x04\x00\x00\x00\x00\x02\x01\x00\x02\x01\x00\x30\x0b\x30\x09\x06\x05\x2b\x06\x01\x02\x01\x05\x00",  // SNMP GetRequest
+    NULL
+};
+
+static const char *ntp_udp_probes[] = {
+    "\x1b\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",  // NTP request
+    NULL
+};
+
+static const char *generic_probes[] = {
+    "\r\n",
+    "\n",
+    "GET / HTTP/1.0\r\n\r\n",
+    NULL
+};
+
+// 端口特定的探测策略
+static const ProbeStrategy portStrategies[] = {
+    // Web服务
+    {80, http_probes, 3000, 2, "HTTP Web Server"},
+    {8080, http_probes, 3000, 2, "HTTP Alternate"},
+    {8000, http_probes, 3000, 2, "HTTP Development"},
+    {443, https_probes, 5000, 2, "HTTPS Secure Web"},
+    {8443, https_probes, 5000, 2, "HTTPS Alternate"},
+
+    // 文件传输
+    {21, ftp_probes, 3000, 1, "FTP File Transfer"},
+    {990, ftp_probes, 3000, 1, "FTPS Secure FTP"},
+
+    // 远程访问
+    {22, ssh_probes, 2000, 1, "SSH Secure Shell"},
+    {23, telnet_probes, 2000, 1, "Telnet Remote Access"},
+
+    // 邮件服务
+    {25, smtp_probes, 3000, 1, "SMTP Mail Transfer"},
+    {465, smtp_probes, 3000, 1, "SMTPS Secure SMTP"},
+    {587, smtp_probes, 3000, 1, "SMTP Submission"},
+    {110, pop3_probes, 2000, 1, "POP3 Mail Retrieval"},
+    {995, pop3_probes, 2000, 1, "POP3S Secure POP3"},
+    {143, imap_probes, 2000, 1, "IMAP Mail Access"},
+    {993, imap_probes, 2000, 1, "IMAPS Secure IMAP"},
+
+    // 数据库
+    {3306, mysql_probes, 2000, 1, "MySQL Database"},
+    {5432, generic_probes, 2000, 1, "PostgreSQL Database"},
+    {1433, generic_probes, 2000, 1, "MSSQL Database"},
+    {1521, generic_probes, 2000, 1, "Oracle Database"},
+    {27017, generic_probes, 2000, 1, "MongoDB Database"},
+    {6379, generic_probes, 1000, 1, "Redis Database"},
+
+    // 其他服务
+    {53, generic_probes, 1000, 1, "DNS Domain Name Service"},
+    {3389, generic_probes, 3000, 1, "RDP Remote Desktop"},
+    {5900, generic_probes, 2000, 1, "VNC Remote Desktop"},
+    {161, generic_probes, 1000, 1, "SNMP Network Management"},
+    {123, generic_probes, 1000, 1, "NTP Network Time"},
+
+    // 结束标记
+    {0, NULL, 0, 0, NULL}
+};
 
 static const ServicePattern servicePatterns[] = {
     // Web服务器
@@ -151,6 +277,88 @@ static const ServicePattern servicePatterns[] = {
     {NULL, NULL, NULL, 0, 0}
 };
 
+// 根据端口查找探测策略
+const ProbeStrategy* findProbeStrategy(int port) {
+    for (int i = 0; portStrategies[i].port != 0; i++) {
+        if (portStrategies[i].port == port) {
+            return &portStrategies[i];
+        }
+    }
+    return NULL;  // 没有找到特定策略，使用默认策略
+}
+
+// UDP服务探测函数
+AnalyzerResult sendUDPServiceProbe(const char *ip, int port, char *response, int responseSize) {
+    if (!ip || !response || responseSize <= 0 || port <= 0 || port > 65535) {
+        logAnalyzerError(ANALYZER_ERROR_INVALID_PARAM, "sendUDPServiceProbe", "无效的输入参数");
+        return ANALYZER_ERROR_INVALID_PARAM;
+    }
+
+    response[0] = '\0';
+
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) {
+        logAnalyzerError(ANALYZER_ERROR_SOCKET_CREATE, "sendUDPServiceProbe", "UDP Socket创建失败");
+        return ANALYZER_ERROR_SOCKET_CREATE;
+    }
+
+    struct sockaddr_in server = {0};
+    server.sin_family = AF_INET;
+    server.sin_port = htons(port);
+
+    int inet_result = inet_pton(AF_INET, ip, &server.sin_addr);
+    if (inet_result <= 0) {
+        logAnalyzerError(ANALYZER_ERROR_INVALID_PARAM, "sendUDPServiceProbe", "无效的IP地址格式");
+        closesocket(sock);
+        return ANALYZER_ERROR_INVALID_PARAM;
+    }
+
+    // 设置超时
+    int timeout = 2000;
+    if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout)) == SOCKET_ERROR) {
+        logAnalyzerError(ANALYZER_ERROR_SOCKET_CONFIG, "sendUDPServiceProbe", "设置UDP接收超时失败");
+        closesocket(sock);
+        return ANALYZER_ERROR_SOCKET_CONFIG;
+    }
+
+    // 根据端口选择UDP探测包
+    const char **probes = NULL;
+    if (port == 53) {
+        probes = dns_udp_probes;
+    } else if (port == 161) {
+        probes = snmp_udp_probes;
+    } else if (port == 123) {
+        probes = ntp_udp_probes;
+    } else {
+        // 默认UDP探测
+        static const char *default_udp_probes[] = {"\x00", NULL};
+        probes = default_udp_probes;
+    }
+
+    // 发送UDP探测包
+    for (int i = 0; probes[i] != NULL && response[0] == '\0'; i++) {
+        int probe_len = (port == 53) ? 29 : (port == 161) ? 37 : (port == 123) ? 48 : 1;
+
+        if (sendto(sock, probes[i], probe_len, 0, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR) {
+            continue;  // 尝试下一个探测包
+        }
+
+        // 尝试接收响应
+        struct sockaddr_in from_addr;
+        int from_len = sizeof(from_addr);
+        int recv_result = recvfrom(sock, response, responseSize - 1, 0,
+                                   (struct sockaddr*)&from_addr, &from_len);
+
+        if (recv_result > 0) {
+            response[recv_result] = '\0';
+            break;  // 收到响应，停止探测
+        }
+    }
+
+    closesocket(sock);
+    return ANALYZER_SUCCESS;
+}
+
 AnalyzerResult analyzeTCPResponse(const char *ip, int port, PortInfo *portInfo) {
     // 参数有效性检查
     if (!ip || !portInfo || port <= 0 || port > 65535) {
@@ -216,32 +424,55 @@ AnalyzerResult sendServiceProbe(const char *ip, int port, char *response, int re
         return ANALYZER_ERROR_SOCKET_CONFIG;
     }
 
-    if (connect(sock, (struct sockaddr*)&server, sizeof(server)) == 0) {
-        // 发送探测数据
-        const char *probes[] = {
-            "HEAD / HTTP/1.0\r\n\r\n",  // HTTP
-            "HELP\r\n",                 // FTP
-            "\r\n",                     // SMTP
-            NULL
-        };
+    // 查找端口特定的探测策略
+    const ProbeStrategy *strategy = findProbeStrategy(port);
+    const char **probes = generic_probes;  // 默认探测包
+    int custom_timeout = timeout;
 
+    if (strategy) {
+        probes = strategy->probes;
+        custom_timeout = strategy->timeout_ms;
+
+        // 更新超时设置
+        if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&custom_timeout, sizeof(custom_timeout)) == SOCKET_ERROR) {
+            logAnalyzerError(ANALYZER_ERROR_SOCKET_CONFIG, "sendServiceProbe", "更新接收超时失败");
+        }
+        if (setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&custom_timeout, sizeof(custom_timeout)) == SOCKET_ERROR) {
+            logAnalyzerError(ANALYZER_ERROR_SOCKET_CONFIG, "sendServiceProbe", "更新发送超时失败");
+        }
+    }
+
+    if (connect(sock, (struct sockaddr*)&server, sizeof(server)) == 0) {
+        // 使用智能探测策略
         for (int i = 0; probes[i] != NULL && response[0] == '\0'; i++) {
             int send_result = send(sock, probes[i], strlen(probes[i]), 0);
             if (send_result == SOCKET_ERROR) {
-                logAnalyzerError(ANALYZER_ERROR_SEND, "sendServiceProbe", "发送探测数据失败");
-                closesocket(sock);
-                return ANALYZER_ERROR_SEND;
+                // 发送失败，尝试下一个探测包
+                continue;
             }
+
+            // 等待一小段时间让服务器处理请求
+            Sleep(100);
 
             int recv_result = recv(sock, response, responseSize - 1, 0);
             if (recv_result == SOCKET_ERROR) {
                 // 接收失败，但不一定是错误，可能是服务不响应
                 continue;
             } else if (recv_result == 0) {
-                // 连接被对方关闭
+                // 连接被对方关闭，可能是某些服务的正常行为
                 continue;
             } else if (recv_result > 0) {
                 // 确保字符串以null结尾
+                response[recv_result] = '\0';
+                break;  // 收到响应，停止探测
+            }
+        }
+
+        // 如果没有收到响应，尝试只连接不发送数据（某些服务会主动发送横幅）
+        if (response[0] == '\0') {
+            Sleep(500);  // 等待服务器主动发送横幅
+            int recv_result = recv(sock, response, responseSize - 1, 0);
+            if (recv_result > 0) {
                 response[recv_result] = '\0';
             }
         }

@@ -24,11 +24,22 @@ int safe_snprintf(char* buffer, size_t size, const char* format, ...);
 // 错误日志记录函数
 void logAnalyzerError(AnalyzerResult error, const char* function, const char* details);
 
+// 探测策略结构体声明
+typedef struct {
+    int port;
+    const char **probes;
+    int timeout_ms;
+    int max_retries;
+    const char *description;
+} ProbeStrategy;
+
 // 服务识别函数
 AnalyzerResult analyzeTCPResponse(const char *ip, int port, PortInfo *portInfo);
 AnalyzerResult sendServiceProbe(const char *ip, int port, char *response, int responseSize);
+AnalyzerResult sendUDPServiceProbe(const char *ip, int port, char *response, int responseSize);
 void analyzeServiceBanner(const char *banner, PortInfo *portInfo);
 void analyzeServiceBannerAdvanced(const char *banner, int port, PortInfo *portInfo);
 void extractVersionSimple(const char *banner, const char *pattern, char *version, size_t version_size);
+const ProbeStrategy* findProbeStrategy(int port);
 
 #endif
