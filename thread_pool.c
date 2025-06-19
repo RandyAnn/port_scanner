@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "scan_engine.h"
 #include "thread_pool.h"
+#include "port_analyzer.h"
 
 static DWORD WINAPI workerThread(LPVOID param);
 static BOOL getTask(ThreadPool* pool, ScanTask* task);
@@ -101,14 +102,23 @@ static DWORD WINAPI workerThread(LPVOID param) {
 
         // 处理扫描结果
         handleScanResult(status, task.port, ((ScanConfig*)task.config)->verbose);
-        
+
         // 保存扫描结果
         if (task.result) {
             sprintf(task.result->status, "%d", status);
-            // 如果需要，这里可以添加服务识别等其他信息
+
+            // 如果端口开放且配置了服务分析，则进行服务识别
+            if (status == PORT_STATUS_OPEN &&
+                ((ScanConfig*)task.config)->analyzeServices &&
+                task.scanType == SCAN_TYPE_TCP) {
+                AnalyzerResult analyzer_result = analyzeTCPResponse(task.ip, task.port, task.result);
+                if (analyzer_result != ANALYZER_SUCCESS) {
+                    // 服务分析失败，但不影响端口扫描结果
+                    printf("端口 %d 服务分析失败\n", task.port);
+                }
+            }
         }
     }
-
     return 0;
 }
 
@@ -122,4 +132,4 @@ void waitForCompletion(ThreadPool* pool) {
         ReleaseMutex(pool->mutex);
         Sleep(100);
     }
-} 
+}

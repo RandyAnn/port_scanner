@@ -29,7 +29,7 @@ void printUsage() {
     printf("-m <扫描模式>    1=TCP连接扫描 2=ICMP Ping测试 3=UDP扫描\n");
     printf("-n <线程数>      设置扫描线程数(1-%d)\n", MAX_THREADS);
     printf("-v              显示详细信息\n");
-    printf("-a              进行服务版本分析\n");
+    printf("-a              进行服务版本分析（仅限TCP扫描）\n");
     printf("\n示例:\n");
     printf("扫描单个端口: port_scanner.exe 192.168.1.1 -p 80 -t 1000 -m 1 -v\n");
     printf("ICMP Ping测试: port_scanner.exe 192.168.1.1 -t 1000 -m 2 -v\n");
