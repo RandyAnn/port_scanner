@@ -486,26 +486,276 @@ AnalyzerResult sendServiceProbe(const char *ip, int port, char *response, int re
     return ANALYZER_SUCCESS;
 }
 
-// 简单的版本提取函数（用于不支持正则表达式的情况）
+// 版本提取模式枚举已在头文件中定义
+
+// 版本信息清理和验证
+void cleanVersionString(char *version, size_t max_len) {
+    if (!version) return;
+
+    size_t len = strlen(version);
+    if (len == 0) return;
+
+    // 去除前导空格和特殊字符
+    char *start = version;
+    while (*start && (*start == ' ' || *start == '\t' || *start == '/' || *start == ':')) {
+        start++;
+    }
+
+    // 去除尾部空格、换行符和特殊字符
+    char *end = start + strlen(start) - 1;
+    while (end > start && (*end == ' ' || *end == '\t' || *end == '\r' ||
+           *end == '\n' || *end == ')' || *end == ']' || *end == '}' ||
+           *end == '"' || *end == '\'' || *end == ';')) {
+        *end = '\0';
+        end--;
+    }
+
+    // 移动清理后的字符串到开头
+    if (start != version) {
+        memmove(version, start, strlen(start) + 1);
+    }
+
+    // 验证版本格式的合理性
+    len = strlen(version);
+    if (len > 0) {
+        // 检查是否包含版本号特征（数字、点号）
+        BOOL has_digit = FALSE;
+        for (size_t i = 0; i < len; i++) {
+            if (isdigit(version[i])) {
+                has_digit = TRUE;
+                break;
+            }
+        }
+
+        // 如果没有数字且长度过长，可能不是版本号
+        if (!has_digit && len > 20) {
+            version[0] = '\0';
+        }
+
+        // 截断过长的版本字符串
+        if (len > max_len - 1) {
+            version[max_len - 1] = '\0';
+        }
+    }
+}
+
+// 高级版本信息提取函数
+int extractVersionInfo(const char *banner, const char *service, const char *pattern,
+                      VersionExtractionMode mode, char *version, size_t version_size) {
+    if (!banner || !version || version_size == 0) {
+        return -1;
+    }
+
+    version[0] = '\0';
+
+    switch (mode) {
+        case VERSION_MODE_HTTP_HEADER: {
+            // HTTP Server头格式：Server: Apache/2.4.41 (Ubuntu)
+            char *server_start = strstr(banner, "Server:");
+            if (!server_start) server_start = strstr(banner, "server:");
+            if (server_start) {
+                server_start += 7;
+                while (*server_start == ' ' || *server_start == '\t') server_start++;
+
+                // 查找服务名后的版本号
+                if (pattern && strstr(server_start, pattern)) {
+                    char *ver_start = strstr(server_start, pattern) + strlen(pattern);
+                    if (*ver_start == '/') ver_start++;
+
+                    size_t i = 0;
+                    while (i < version_size - 1 && *ver_start &&
+                           *ver_start != ' ' && *ver_start != '\t' && *ver_start != '\r' &&
+                           *ver_start != '\n' && *ver_start != '(' && *ver_start != ';') {
+                        version[i++] = *ver_start++;
+                    }
+                    version[i] = '\0';
+                } else {
+                    // 提取整个Server头内容
+                    size_t i = 0;
+                    while (i < version_size - 1 && *server_start &&
+                           *server_start != '\r' && *server_start != '\n') {
+                        version[i++] = *server_start++;
+                    }
+                    version[i] = '\0';
+                }
+            }
+            break;
+        }
+
+        case VERSION_MODE_FTP_BANNER: {
+            // FTP横幅格式：220 (vsFTPd 3.0.3) 或 220 ProFTPD 1.3.6
+            if (strstr(banner, "220")) {
+                if (pattern) {
+                    char *pattern_start = strstr(banner, pattern);
+                    if (pattern_start) {
+                        char *ver_start = pattern_start + strlen(pattern);
+                        while (*ver_start == ' ' || *ver_start == '\t') ver_start++;
+
+                        size_t i = 0;
+                        while (i < version_size - 1 && *ver_start &&
+                               *ver_start != ' ' && *ver_start != ')' && *ver_start != '\r' && *ver_start != '\n') {
+                            version[i++] = *ver_start++;
+                        }
+                        version[i] = '\0';
+                    }
+                }
+            }
+            break;
+        }
+
+        case VERSION_MODE_SSH_BANNER: {
+            // SSH横幅格式：SSH-2.0-OpenSSH_8.2p1 Ubuntu-4ubuntu0.5
+            if (strstr(banner, "SSH-")) {
+                if (pattern) {
+                    char *pattern_start = strstr(banner, pattern);
+                    if (pattern_start) {
+                        char *ver_start = pattern_start + strlen(pattern);
+
+                        size_t i = 0;
+                        while (i < version_size - 1 && *ver_start &&
+                               *ver_start != ' ' && *ver_start != '\r' && *ver_start != '\n') {
+                            version[i++] = *ver_start++;
+                        }
+                        version[i] = '\0';
+                    }
+                }
+            }
+            break;
+        }
+
+        case VERSION_MODE_SMTP_BANNER: {
+            // SMTP横幅格式：220 hostname ESMTP Postfix (Ubuntu)
+            if (strstr(banner, "220")) {
+                if (pattern) {
+                    char *pattern_start = strstr(banner, pattern);
+                    if (pattern_start) {
+                        // 查找版本信息（通常在括号中或服务名后）
+                        char *ver_start = pattern_start + strlen(pattern);
+                        while (*ver_start == ' ' || *ver_start == '\t') ver_start++;
+
+                        if (*ver_start == '(') {
+                            ver_start++;
+                            size_t i = 0;
+                            while (i < version_size - 1 && *ver_start && *ver_start != ')') {
+                                version[i++] = *ver_start++;
+                            }
+                            version[i] = '\0';
+                        } else {
+                            size_t i = 0;
+                            while (i < version_size - 1 && *ver_start &&
+                                   *ver_start != ' ' && *ver_start != '\r' && *ver_start != '\n') {
+                                version[i++] = *ver_start++;
+                            }
+                            version[i] = '\0';
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
+        case VERSION_MODE_MYSQL_BANNER: {
+            // MySQL横幅格式：5.7.34-0ubuntu0.18.04.1
+            if (pattern) {
+                char *pattern_start = strstr(banner, pattern);
+                if (pattern_start) {
+                    char *ver_start = pattern_start + strlen(pattern);
+
+                    size_t i = 0;
+                    while (i < version_size - 1 && *ver_start &&
+                           *ver_start != '-' && *ver_start != ' ' && *ver_start != '\r' && *ver_start != '\n') {
+                        version[i++] = *ver_start++;
+                    }
+                    version[i] = '\0';
+                }
+            }
+            break;
+        }
+
+        case VERSION_MODE_PARENTHESES: {
+            // 括号模式：service (version)
+            char *paren_start = strchr(banner, '(');
+            if (paren_start) {
+                paren_start++;
+                char *paren_end = strchr(paren_start, ')');
+                if (paren_end) {
+                    size_t len = paren_end - paren_start;
+                    if (len < version_size) {
+                        strncpy(version, paren_start, len);
+                        version[len] = '\0';
+                    }
+                }
+            }
+            break;
+        }
+
+        case VERSION_MODE_BRACKETS: {
+            // 方括号模式：service [version]
+            char *bracket_start = strchr(banner, '[');
+            if (bracket_start) {
+                bracket_start++;
+                char *bracket_end = strchr(bracket_start, ']');
+                if (bracket_end) {
+                    size_t len = bracket_end - bracket_start;
+                    if (len < version_size) {
+                        strncpy(version, bracket_start, len);
+                        version[len] = '\0';
+                    }
+                }
+            }
+            break;
+        }
+
+        case VERSION_MODE_QUOTED: {
+            // 引号模式：service "version"
+            char *quote_start = strchr(banner, '"');
+            if (quote_start) {
+                quote_start++;
+                char *quote_end = strchr(quote_start, '"');
+                if (quote_end) {
+                    size_t len = quote_end - quote_start;
+                    if (len < version_size) {
+                        strncpy(version, quote_start, len);
+                        version[len] = '\0';
+                    }
+                }
+            }
+            break;
+        }
+
+        case VERSION_MODE_SIMPLE:
+        default: {
+            // 简单模式：查找模式后的版本号
+            if (pattern) {
+                char *pattern_start = strstr(banner, pattern);
+                if (pattern_start) {
+                    char *ver_start = pattern_start + strlen(pattern);
+                    while (*ver_start == ' ' || *ver_start == '\t' || *ver_start == '/') ver_start++;
+
+                    size_t i = 0;
+                    while (i < version_size - 1 && *ver_start &&
+                           *ver_start != ' ' && *ver_start != '\t' && *ver_start != '\r' &&
+                           *ver_start != '\n' && *ver_start != ')' && *ver_start != ']' && *ver_start != '}') {
+                        version[i++] = *ver_start++;
+                    }
+                    version[i] = '\0';
+                }
+            }
+            break;
+        }
+    }
+
+    // 清理和验证版本字符串
+    cleanVersionString(version, version_size);
+
+    return (version[0] != '\0') ? 0 : -1;
+}
+
+// 简单的版本提取函数（保持向后兼容）
 void extractVersionSimple(const char *banner, const char *pattern, char *version, size_t version_size) {
     if (!banner || !pattern || !version) return;
 
-    char *start = strstr(banner, pattern);
-    if (!start) return;
-
-    start += strlen(pattern);
-
-    // 跳过空格
-    while (*start == ' ' || *start == '\t') start++;
-
-    // 提取版本号直到遇到空格、换行或其他分隔符
-    size_t i = 0;
-    while (i < version_size - 1 && *start &&
-           *start != ' ' && *start != '\t' && *start != '\r' && *start != '\n' &&
-           *start != ')' && *start != ']' && *start != '}') {
-        version[i++] = *start++;
-    }
-    version[i] = '\0';
+    extractVersionInfo(banner, NULL, pattern, VERSION_MODE_SIMPLE, version, version_size);
 }
 
 // 高级服务横幅分析函数
@@ -549,38 +799,111 @@ void analyzeServiceBannerAdvanced(const char *banner, int port, PortInfo *portIn
             return;
         }
 
-        // 尝试提取版本信息
-        if (pattern->version_pattern) {
-            // 简化的版本提取（不使用正则表达式）
-            char temp_version[64] = {0};
+        // 使用高级版本信息提取
+        char temp_version[64] = {0};
+        int extraction_result = -1;
 
-            if (strstr(pattern->version_pattern, "Apache/")) {
-                extractVersionSimple(banner, "Apache/", temp_version, sizeof(temp_version));
-            } else if (strstr(pattern->version_pattern, "nginx/")) {
-                extractVersionSimple(banner, "nginx/", temp_version, sizeof(temp_version));
-            } else if (strstr(pattern->version_pattern, "Microsoft-IIS/")) {
-                extractVersionSimple(banner, "Microsoft-IIS/", temp_version, sizeof(temp_version));
-            } else if (strstr(pattern->version_pattern, "SSH-2.0-OpenSSH_")) {
-                extractVersionSimple(banner, "SSH-2.0-OpenSSH_", temp_version, sizeof(temp_version));
-            } else if (strstr(pattern->version_pattern, "SSH-2.0-")) {
-                extractVersionSimple(banner, "SSH-2.0-", temp_version, sizeof(temp_version));
-            } else if (strstr(pattern->version_pattern, "220 ProFTPD")) {
-                extractVersionSimple(banner, "220 ProFTPD ", temp_version, sizeof(temp_version));
-            } else if (strstr(pattern->version_pattern, "vsFTPd")) {
-                extractVersionSimple(banner, "vsFTPd ", temp_version, sizeof(temp_version));
+        // 根据服务类型选择最佳的版本提取模式
+        if (strcmp(pattern->service, "HTTP") == 0 || strcmp(pattern->service, "HTTPS") == 0) {
+            // HTTP服务：优先尝试Server头模式
+            extraction_result = extractVersionInfo(banner, pattern->service, "Apache", VERSION_MODE_HTTP_HEADER, temp_version, sizeof(temp_version));
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, "nginx", VERSION_MODE_HTTP_HEADER, temp_version, sizeof(temp_version));
+            }
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, "Microsoft-IIS", VERSION_MODE_HTTP_HEADER, temp_version, sizeof(temp_version));
+            }
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, NULL, VERSION_MODE_HTTP_HEADER, temp_version, sizeof(temp_version));
+            }
+        } else if (strcmp(pattern->service, "SSH") == 0) {
+            // SSH服务：使用SSH横幅模式
+            extraction_result = extractVersionInfo(banner, pattern->service, "SSH-2.0-OpenSSH_", VERSION_MODE_SSH_BANNER, temp_version, sizeof(temp_version));
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, "SSH-2.0-", VERSION_MODE_SSH_BANNER, temp_version, sizeof(temp_version));
+            }
+        } else if (strcmp(pattern->service, "FTP") == 0 || strcmp(pattern->service, "FTPS") == 0) {
+            // FTP服务：使用FTP横幅模式
+            extraction_result = extractVersionInfo(banner, pattern->service, "vsFTPd", VERSION_MODE_FTP_BANNER, temp_version, sizeof(temp_version));
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, "ProFTPD", VERSION_MODE_FTP_BANNER, temp_version, sizeof(temp_version));
+            }
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, "FileZilla Server", VERSION_MODE_FTP_BANNER, temp_version, sizeof(temp_version));
+            }
+            // 尝试括号模式
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, NULL, VERSION_MODE_PARENTHESES, temp_version, sizeof(temp_version));
+            }
+        } else if (strcmp(pattern->service, "SMTP") == 0 || strcmp(pattern->service, "SMTPS") == 0) {
+            // SMTP服务：使用SMTP横幅模式
+            extraction_result = extractVersionInfo(banner, pattern->service, "Postfix", VERSION_MODE_SMTP_BANNER, temp_version, sizeof(temp_version));
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, "Sendmail", VERSION_MODE_SMTP_BANNER, temp_version, sizeof(temp_version));
+            }
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, "Microsoft ESMTP", VERSION_MODE_SMTP_BANNER, temp_version, sizeof(temp_version));
+            }
+            // 尝试括号模式
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, NULL, VERSION_MODE_PARENTHESES, temp_version, sizeof(temp_version));
+            }
+        } else if (strcmp(pattern->service, "MySQL") == 0) {
+            // MySQL服务：使用MySQL横幅模式
+            extraction_result = extractVersionInfo(banner, pattern->service, "", VERSION_MODE_MYSQL_BANNER, temp_version, sizeof(temp_version));
+        } else if (strcmp(pattern->service, "POP3") == 0 || strcmp(pattern->service, "POP3S") == 0 ||
+                   strcmp(pattern->service, "IMAP") == 0 || strcmp(pattern->service, "IMAPS") == 0) {
+            // 邮件服务：尝试多种模式
+            extraction_result = extractVersionInfo(banner, pattern->service, "Dovecot", VERSION_MODE_SIMPLE, temp_version, sizeof(temp_version));
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, NULL, VERSION_MODE_PARENTHESES, temp_version, sizeof(temp_version));
+            }
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, NULL, VERSION_MODE_BRACKETS, temp_version, sizeof(temp_version));
+            }
+        } else if (strcmp(pattern->service, "DNS") == 0) {
+            // DNS服务：尝试BIND版本提取
+            extraction_result = extractVersionInfo(banner, pattern->service, "BIND", VERSION_MODE_SIMPLE, temp_version, sizeof(temp_version));
+            if (extraction_result != 0) {
+                extraction_result = extractVersionInfo(banner, pattern->service, "dnsmasq", VERSION_MODE_SIMPLE, temp_version, sizeof(temp_version));
+            }
+        } else if (strcmp(pattern->service, "Proxy") == 0) {
+            // 代理服务：尝试Squid版本提取
+            extraction_result = extractVersionInfo(banner, pattern->service, "squid", VERSION_MODE_SIMPLE, temp_version, sizeof(temp_version));
+        } else {
+            // 其他服务：尝试通用模式
+            if (pattern->version_pattern) {
+                // 使用服务指纹中定义的模式
+                if (strstr(pattern->version_pattern, "Apache/")) {
+                    extraction_result = extractVersionInfo(banner, pattern->service, "Apache/", VERSION_MODE_SIMPLE, temp_version, sizeof(temp_version));
+                } else if (strstr(pattern->version_pattern, "nginx/")) {
+                    extraction_result = extractVersionInfo(banner, pattern->service, "nginx/", VERSION_MODE_SIMPLE, temp_version, sizeof(temp_version));
+                } else if (strstr(pattern->version_pattern, "Microsoft-IIS/")) {
+                    extraction_result = extractVersionInfo(banner, pattern->service, "Microsoft-IIS/", VERSION_MODE_SIMPLE, temp_version, sizeof(temp_version));
+                } else {
+                    // 尝试多种通用模式
+                    extraction_result = extractVersionInfo(banner, pattern->service, NULL, VERSION_MODE_PARENTHESES, temp_version, sizeof(temp_version));
+                    if (extraction_result != 0) {
+                        extraction_result = extractVersionInfo(banner, pattern->service, NULL, VERSION_MODE_BRACKETS, temp_version, sizeof(temp_version));
+                    }
+                    if (extraction_result != 0) {
+                        extraction_result = extractVersionInfo(banner, pattern->service, NULL, VERSION_MODE_QUOTED, temp_version, sizeof(temp_version));
+                    }
+                }
             } else {
-                // 通用版本提取
-                char *ver = strstr(banner, "Server:");
-                if (ver) {
-                    extractVersionSimple(banner, "Server:", temp_version, sizeof(temp_version));
+                // 没有版本模式，尝试通用提取
+                extraction_result = extractVersionInfo(banner, pattern->service, NULL, VERSION_MODE_PARENTHESES, temp_version, sizeof(temp_version));
+                if (extraction_result != 0) {
+                    extraction_result = extractVersionInfo(banner, pattern->service, NULL, VERSION_MODE_BRACKETS, temp_version, sizeof(temp_version));
                 }
             }
+        }
 
-            if (temp_version[0] != '\0') {
-                if (safe_strncpy(portInfo->version, temp_version, sizeof(portInfo->version)) != 0) {
-                    logAnalyzerError(ANALYZER_ERROR_MEMORY, "analyzeServiceBannerAdvanced", "版本信息复制失败");
-                    return;
-                }
+        // 如果成功提取到版本信息，保存到结果中
+        if (extraction_result == 0 && temp_version[0] != '\0') {
+            if (safe_strncpy(portInfo->version, temp_version, sizeof(portInfo->version)) != 0) {
+                logAnalyzerError(ANALYZER_ERROR_MEMORY, "analyzeServiceBannerAdvanced", "版本信息复制失败");
+                return;
             }
         }
     }

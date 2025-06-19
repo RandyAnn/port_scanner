@@ -33,6 +33,19 @@ typedef struct {
     const char *description;
 } ProbeStrategy;
 
+// 版本提取模式枚举
+typedef enum {
+    VERSION_MODE_SIMPLE,
+    VERSION_MODE_HTTP_HEADER,
+    VERSION_MODE_FTP_BANNER,
+    VERSION_MODE_SSH_BANNER,
+    VERSION_MODE_SMTP_BANNER,
+    VERSION_MODE_MYSQL_BANNER,
+    VERSION_MODE_PARENTHESES,
+    VERSION_MODE_BRACKETS,
+    VERSION_MODE_QUOTED
+} VersionExtractionMode;
+
 // 服务识别函数
 AnalyzerResult analyzeTCPResponse(const char *ip, int port, PortInfo *portInfo);
 AnalyzerResult sendServiceProbe(const char *ip, int port, char *response, int responseSize);
@@ -41,5 +54,10 @@ void analyzeServiceBanner(const char *banner, PortInfo *portInfo);
 void analyzeServiceBannerAdvanced(const char *banner, int port, PortInfo *portInfo);
 void extractVersionSimple(const char *banner, const char *pattern, char *version, size_t version_size);
 const ProbeStrategy* findProbeStrategy(int port);
+
+// 高级版本提取函数
+int extractVersionInfo(const char *banner, const char *service, const char *pattern,
+                      VersionExtractionMode mode, char *version, size_t version_size);
+void cleanVersionString(char *version, size_t max_len);
 
 #endif
